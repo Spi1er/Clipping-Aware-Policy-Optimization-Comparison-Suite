@@ -1,21 +1,40 @@
 .venv/
+venv/
+env/
 __pycache__/
-*.pyc
+*.py[cod]
+*.so
+
+# macOS / editor / notebook noise
 .DS_Store
+.Rhistory
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# secrets and local config
+.env
+.env.*
+wandb_api_key*
+
+# training outputs and large model artifacts
 wandb/
 trainer/wandb/
 checkpoints/
 out/
+outputs/
+runs/
 *.pth
 *.pt
 *.bin
 *.ckpt
-.env
 *.safetensors
-*.pth
-*.pt
-*.bin
-wandb/
-trainer/wandb/
-checkpoints/
-out/
+
+# local logs / temporary backups
+*.log
+tea_debug.log
+trainer/backup_before_wandb/
+backup_before_wandb/
+untitled folder/
+Plots/
+

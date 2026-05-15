@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Clipping-Aware Policy Optimization for Lightweight LLM Post-Training</title>
+  <style>
+    @page { size: letter; margin: 0.55in; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Times New Roman", Times, serif;
+      font-size: 10.4pt;
+      line-height: 1.23;
+      color: #111;
+      background: white;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      font-size: 18pt;
+      line-height: 1.08;
+      text-align: center;
+      margin-bottom: 5px;
+    }
+    .author {
+      text-align: center;
+      font-size: 10pt;
+      margin-bottom: 8px;
+    }
+    .author a {
+      color: #111;
+      text-decoration: none;
+    }
+    .abstract {
+      max-width: 7.2in;
+      margin: 0 auto 10px auto;
+      border-top: 0.7px solid #555;
+      border-bottom: 0.7px solid #555;
+      padding: 6px 0;
+      font-size: 10pt;
+    }
+    .abstract b { font-size: 10.3pt; }
+    main {
+      column-count: 2;
+      column-gap: 0.27in;
+    }
+    h2 {
+      font-size: 11.8pt;
+      margin: 9px 0 4px;
+      break-after: avoid;
+    }
+    h3 {
+      font-size: 10.8pt;
+      margin: 7px 0 3px;
+      break-after: avoid;
+    }
+    p { margin-bottom: 5.5px; text-align: justify; }
+    ul { margin: 3px 0 6px 15px; padding: 0; }
+    li { margin-bottom: 2.5px; }
+    .wide {
+      column-span: all;
+      margin: 7px 0 8px;
+      break-inside: avoid;
+    }
+    figure { margin: 0; break-inside: avoid; }
+    figcaption {
+      font-size: 10pt;
+      line-height: 1.13;
+      margin-top: 2px;
+      color: #222;
+    }
+    img { max-width: 100%; display: block; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10pt;
+      line-height: 1.05;
+    }
+    th, td {
+      border: 0.5px solid #555;
+      padding: 2px 3px;
+      text-align: right;
+      vertical-align: top;
+    }
+    th:first-child, td:first-child { text-align: left; }
+    th { background: #eee; font-weight: 700; }
+    .eq {
+      text-align: center;
+      margin: 5px 0 6px;
+      font-size: 10.3pt;
+      break-inside: avoid;
+    }
+    .chain {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 5px;
+      font-weight: 600;
+      flex-wrap: wrap;
+      font-size: 10pt;
+    }
+    .formula {
+      display: inline-block;
+      padding: 4px 8px;
+      border: 0.6px solid #bbb;
+      background: #fafafa;
+      line-height: 1.35;
+      max-width: 100%;
+    }
+    .math-shot {
+      display: block;
+      margin: 5px auto 7px;
+      height: auto;
+      object-fit: contain;
+    }
+    .math-ratio { width: 52%; max-width: 210px; }
+    .math-grpo { width: 96%; max-width: 390px; }
+    .math-ce { width: 96%; max-width: 385px; }
+    .frac {
+      display: inline-flex;
+      flex-direction: column;
+      vertical-align: middle;
+      text-align: center;
+      line-height: 1.05;
+      margin: 0 2px;
+    }
+    .frac .top {
+      border-bottom: 0.7px solid #111;
+      padding: 0 3px 1px;
+    }
+    .frac .bottom { padding: 1px 3px 0; }
+    .overhat {
+      position: relative;
+      display: inline-block;
+      padding-top: 1px;
+    }
+    .overhat::before {
+      content: "^";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -0.72em;
+      text-align: center;
+      font-size: 0.82em;
+    }
+    .cases {
+      display: inline-grid;
+      grid-template-columns: auto auto;
+      column-gap: 14px;
+      row-gap: 2px;
+      text-align: left;
+      vertical-align: middle;
+    }
+    .case-left { text-align: right; }
+    .small { font-size: 10pt; }
+    .refs {
+      column-span: all;
+      font-size: 10pt;
+      line-height: 1.15;
+      margin-top: 6px;
+    }
+    .refs p { margin-bottom: 3px; text-align: left; }
+    code {
+      font-family: "Courier New", monospace;
+      font-size: 10pt;
+    }
+  </style>
+</head>
+<body>
+  <h1>Clipping-Aware Policy Optimization for Lightweight LLM Post-Training</h1>
+  <div class="author">Peiyan Sun (UID: ps3558)<br>EECS 6892: Reinforcement Learning<br>Course Project Report<br>Code: <a href="https://github.com/Spi1er/Clipping-Aware-Policy-Optimization-Comparison-Suite">github.com/Spi1er/Clipping-Aware-Policy-Optimization-Comparison-Suite</a></div>
+
+  <section class="abstract">
+    <b>Abstract.</b>
+    Policy-gradient post-training of language models depends on a delicate trust-region
+    mechanism: the policy should move far enough to learn from reward feedback, but not
+    so far that importance ratios, KL divergence, or entropy become unstable. This
+    project studies how different clipping and surrogate objectives affect this trade-off
+    in a controlled RLAIF setting for a lightweight Chinese instruction-following model.
+    I implemented and compared seven objectives under a shared rollout, reward, masking,
+    advantage-normalization, optimizer, and logging pipeline. The central analysis follows
+    a mechanism chain: clipping reshapes the distribution of policy ratios; ratio movement
+    determines which tokens keep gradient signal; gradient preservation or suppression
+    then explains the observed training dynamics. In the exported runs, CE-GPPO achieved
+    the strongest smoothed reward, while DAPO and CFPO gave the best reward-stability
+    compromise. DCPO nearly eliminated hard-clipped tokens but did not convert that
+    stability into the highest reward, and GSPO underperformed in this small-model
+    setting. The results suggest that clipping quality is better understood through
+    ratio and gradient diagnostics than through reward alone.
+  </section>
+
+  <main>
+    <h2>1. Introduction</h2>
+    <p>
+      Reinforcement learning from AI feedback (RLAIF) is widely used to refine language
+      models after supervised fine-tuning. In this setting, a policy generates responses,
+      a reward model or rule-based reward assigns scores, and a policy-gradient objective
+      increases the probability of better responses while suppressing worse ones. The
+      main difficulty is that language-model policies are high-dimensional distributions:
+      even small token-level probability changes can accumulate into unstable behavior.
+      Therefore most practical methods constrain the policy update through a trust-region
+      device such as KL regularization, importance-ratio clipping, or both.
+    </p>
+    <p>
+      This project asks a focused question: <b>how do different clipping methods change
+      the training process and final behavior of an LLM policy?</b> Instead of treating
+      reward as the only outcome, I analyze the intermediate mechanics that connect an
+      objective to training behavior. The chain is:
+    </p>
+    <div class="eq chain">
+      <span>clip rule</span>
+      <span>&rarr;</span>
+      <span>ratio</span>
+      <span>&rarr;</span>
+      <span>gradient</span>
+      <span>&rarr;</span>
+      <span>dynamics</span>
+    </div>
+    <p>
+      The study is built on the MiniMind post-training codebase, using a Qwen-style
+      decoder-only model, Chinese instruction-following RLAIF data, online rollouts, and a
+      shared reward model. I compared GRPO, DAPO, DCPO, CFPO, SAPO, GSPO, and CE-GPPO
+      using the same infrastructure and hyperparameter scale whenever possible. This makes
+      the comparison primarily about the objective, not about differences in data loading,
+      reward shaping, masking, or logging.
+    </p>
+
+    <h2>2. Related Work</h2>
+    <p>
+      The first category is <b>proximal policy-gradient optimization</b>. PPO introduced
+      the clipped surrogate objective as a simpler alternative to trust-region policy
+      optimization, allowing multiple minibatch updates while limiting policy movement
+      through the ratio between new and old policies [1]. GRPO adapts this idea to LLM
+      reasoning by replacing the critic with group-relative advantages computed over
+      multiple completions for the same prompt [2]. This makes RL training cheaper than
+      actor-critic PPO, but it still inherits token-level clipping behavior.
+    </p>
+    <p>
+      The second category is <b>variants that modify the clipping geometry</b>. DAPO
+      decouples lower and upper clip bounds and uses dynamic sampling in its large-scale
+      formulation [3]. DCPO uses token-probability-adaptive clipping bounds, widening the
+      permissible ratio interval for low-probability tokens [4]. GSPO moves clipping to
+      a sequence-level normalized ratio, motivated by the high variance of token-level
+      importance weights [5]. These methods share the goal of improving stability, but
+      they intervene at different levels of granularity.
+    </p>
+    <p>
+      The third category is <b>gradient-preserving or soft trust regions</b>. SAPO
+      replaces hard clipping with a temperature-controlled soft gate that continuously
+      attenuates off-policy updates [6]. CE-GPPO argues that clipped tokens can carry
+      important entropy-regulating gradients and reintroduces selected out-of-clip
+      gradients in a bounded form [7]. CFPO, as implemented in this project, removes hard
+      clipping and uses a quadratic penalty around ratio 1. These approaches are directly
+      connected to this project's main hypothesis: clipping affects training not only by
+      limiting ratios, but by deciding which gradients survive.
+    </p>
+
+    <h2>3. Methods</h2>
+    <h3>3.1 Shared RLAIF Pipeline</h3>
+    <p>
+      The experimental framework uses the same pipeline for all methods. For each prompt,
+      the rollout engine samples multiple completions from a frozen snapshot of the
+      current policy. The trainable policy then recomputes token log-probabilities, and a
+      reference model provides KL terms. Rewards combine a reward model score with simple
+      rule components for response length, thinking-format structure, and repetition
+      penalty. Advantages are group-normalized within each prompt's completions, except
+      for DCPO, which uses its smooth advantage-standardization state.
+    </p>
+    <p>
+      This shared implementation matters because the measured differences should come
+      from the surrogate objective. The project logs the same canonical keys across
+      algorithms: reward, policy loss, KL, response length, gradient norm, ratio
+      statistics, clipped fractions, and moving averages. In code, shared reward
+      computation, completion masking, group advantages, KL terms, ratio statistics, and
+      logging schema are centralized in <code>shared_rl_utils.py</code>, while each
+      <code>train_*.py</code> file changes the objective-specific block.
+    </p>
+
+    <h3>3.2 Clip, Ratio, and Gradient</h3>
+    <p>
+      Let the token-level policy ratio be
+    </p>
+    <img class="math-shot math-ratio" src="assets/math_ratio.png" alt="Token-level policy ratio equation">
+    <p>
+      where <code>c_t</code> is the token context and the hatted advantage is
+      the group-normalized advantage. Standard GRPO uses the PPO-style clipped surrogate
+    </p>
+    <img class="math-shot math-grpo" src="assets/math_grpo.png" alt="GRPO clipped surrogate equation">
+    <p>
+      When a token is outside the clip interval in the advantage-improving direction, the
+      clipped term can become locally constant. That is the "dead-zone" effect: the token
+      may still be present in the loss, but its effective gradient contribution is
+      suppressed. Thus the clipped fraction measures more than numerical policy movement;
+      it approximates how much token-level learning signal has been discarded.
+    </p>
+    <p>
+      The compared methods modify this mechanism. DAPO keeps hard clipping but makes the
+      upper and lower bounds asymmetric. DCPO adapts bounds to the old token probability.
+      CFPO replaces the hard interval with a smooth quadratic penalty around ratio 1.
+      SAPO uses a soft sigmoid gate, so off-policy tokens are down-weighted continuously.
+      GSPO computes a sequence-level ratio rather than a token-level ratio. CE-GPPO keeps
+      the clip diagnostic but reintroduces bounded gradients in selected out-of-clip
+      regions:
+    </p>
+    <img class="math-shot math-ce" src="assets/math_cegppo_grad.png" alt="CE-GPPO gradient-preserving piecewise expression">
+    <p>
+      These design choices should appear in ratio spread, clipped fraction, gradient
+      norm, entropy, and reward curves.
+    </p>
+
+    <h2>4. Experiments</h2>
+    <p>
+      The dataset is <code>rlaif.jsonl</code>, containing 19,502 Chinese instruction
+      prompts. The prompt examples include multi-turn dialogue comprehension and question
+      answering; the assistant target is empty because the policy samples responses
+      online during RL. The model is MiniMind, a lightweight decoder-only transformer
+      with Qwen-style design choices. The project configuration used one training epoch,
+      batch size 2, six generations per prompt, learning rate <code>3e-7</code>, KL
+      weight <code>0.1</code>, max generation length 1024, and gradient clipping threshold
+      1.0. Exported W&B CSV files contain 3066 logging steps for each metric.
+    </p>
+    <p>
+      The methods compared are: GRPO with symmetric token-level clip
+      <code>eps=0.2</code>; DAPO with <code>eps_low=0.2</code> and
+      <code>eps_high=0.28</code>; DCPO with dynamic clipping bounds; CFPO with
+      quadratic penalty width <code>eps=0.2</code>; SAPO with
+      <code>tau_pos=2.0</code> and <code>tau_neg=5.0</code>; GSPO with sequence-level
+      <code>eps=0.005</code>; and CE-GPPO with <code>beta1=0.75</code>,
+      <code>beta2=1.0</code>, and <code>eps=0.2</code>. Metrics were summarized using
+      the mean over the final 200 logged steps.
+    </p>
+
+    <div class="wide">
+      <figure>
+        <img src="assets/reward_ma.svg" alt="Smoothed reward curves">
+        <figcaption>
+          <b>Figure 1.</b> Smoothed reward across methods. CE-GPPO finishes with the
+          highest moving-average reward, while GSPO remains negative in the final window.
+        </figcaption>
+      </figure>
+    </div>
+
+    <h2>5. Results and Discussion</h2>
+    <p>
+      Table 1 reports the final-window metrics. CE-GPPO has the highest smoothed reward
+      (0.370) and highest raw reward tail mean (0.417). DAPO is second by reward, while
+      CFPO is close behind and keeps a smaller absolute KL deviation. GRPO is a useful
+      baseline but underperforms the best clipping-aware variants. SAPO is stable but
+      conservative in reward. GSPO performs poorly in this setting despite having a small
+      final token-ratio spread; its low KL and low gradient norm are better interpreted
+      as insufficient useful update rather than successful optimization.
+    </p>
+
+    <div class="wide">
+      <table>
+        <thead>
+          <tr>
+            <th>Method</th>
+            <th>Reward MA</th>
+            <th>Reward</th>
+            <th>KL MA</th>
+            <th>Entropy MA</th>
+            <th>Ratio std</th>
+            <th>Clip frac.</th>
+            <th>Len.</th>
+            <th>Grad norm</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>CE-GPPO</td><td>0.370</td><td>0.417</td><td>-0.458</td><td>1.999</td><td>0.057</td><td>0.020</td><td>213</td><td>18.3</td></tr>
+          <tr><td>DAPO</td><td>0.341</td><td>0.368</td><td>-0.369</td><td>2.454</td><td>0.059</td><td>0.015</td><td>202</td><td>18.6</td></tr>
+          <tr><td>CFPO</td><td>0.311</td><td>0.338</td><td>-0.257</td><td>2.348</td><td>0.052</td><td>n/a</td><td>202</td><td>19.1</td></tr>
+          <tr><td>DCPO</td><td>0.245</td><td>0.261</td><td>-0.319</td><td>2.510</td><td>0.059</td><td>0.000</td><td>211</td><td>21.7</td></tr>
+          <tr><td>GRPO</td><td>0.232</td><td>0.271</td><td>-0.334</td><td>2.305</td><td>0.057</td><td>0.020</td><td>210</td><td>16.7</td></tr>
+          <tr><td>SAPO</td><td>0.184</td><td>0.196</td><td>-0.317</td><td>2.296</td><td>0.057</td><td>n/a</td><td>212</td><td>17.9</td></tr>
+          <tr><td>GSPO</td><td>-0.799</td><td>-0.735</td><td>-0.081</td><td>1.603</td><td>0.051</td><td>n/a</td><td>203</td><td>8.7</td></tr>
+        </tbody>
+      </table>
+      <figcaption>
+        <b>Table 1.</b> Mean over the final 200 logged steps. Clip fraction is reported
+        only for hard-clip methods with directly comparable dead-zone metrics.
+      </figcaption>
+    </div>
+
+    <p>
+      The most important observation is that reducing clipped fraction alone is not
+      enough. DCPO nearly eliminates hard-clipped tokens, with final-window clipped
+      fraction near 0.0001, but its reward remains below CE-GPPO, DAPO, CFPO, and GRPO.
+      This suggests that a wider trust region can preserve more formal gradient paths
+      without necessarily producing better task-directed updates. The reward signal,
+      advantage normalization, and entropy dynamics still determine whether the extra
+      degrees of freedom are useful.
+    </p>
+
+    <div class="wide">
+      <figure>
+        <img src="assets/clipped_fraction.svg" alt="Clipped fraction curves">
+        <figcaption>
+          <b>Figure 2.</b> Hard-clipped fraction for comparable methods. DCPO removes
+          most dead-zone clipping, while CE-GPPO and GRPO retain similar diagnostic clip
+          rates; CE-GPPO differs because it preserves bounded gradients in selected
+          out-of-clip regions.
+        </figcaption>
+      </figure>
+    </div>
+
+    <p>
+      CE-GPPO's result supports the gradient-flow interpretation. Its clipped fraction is
+      similar to GRPO, but it obtains substantially higher reward. The difference is not
+      that CE-GPPO avoids the clip region; it changes what happens once tokens enter that
+      region. By reintroducing bounded gradients for selected out-of-clip tokens, it keeps
+      useful learning signal alive while still controlling magnitude. This is exactly the
+      proposed mechanism chain: the clip rule changes the mapping from ratio to gradient,
+      and the preserved gradient signal accumulates into faster reward improvement.
+    </p>
+    <p>
+      DAPO and CFPO occupy a middle ground. DAPO lowers the hard-clipped fraction relative
+      to GRPO by allowing asymmetric upward movement, and it achieves the second-best
+      reward while maintaining high entropy. CFPO has no hard clip metric because it uses
+      a smooth penalty; its low ratio spread and competitive reward suggest that smooth
+      trust regions can keep updates informative without creating zero-gradient bands.
+      However, CFPO also showed very large early gradient spikes in the full run logs,
+      indicating that removing hard clipping can increase optimization risk.
+    </p>
+    <p>
+      The response-length metric is a useful warning sign. All successful methods end
+      around 200 tokens or more. Since the reward includes length and format terms, part
+      of the reward gain may come from learning a longer-output strategy rather than only
+      better semantic quality. This does not invalidate the comparison, because the reward
+      function is shared, but it shows why reward must be interpreted together with
+      response length, KL, and entropy.
+    </p>
+
+    <h2>6. Conclusion</h2>
+    <p>
+      This project shows that clipping methods should be evaluated as mechanisms for
+      shaping ratio distributions and gradient flow, not merely as final reward recipes.
+      In this controlled lightweight LLM RLAIF suite, CE-GPPO performed best because it
+      preserved useful bounded gradients in regions where standard GRPO would suppress
+      them. DAPO and CFPO provided strong reward-stability trade-offs, DCPO was best at
+      removing hard clipping but not best at reward improvement, and GSPO was poorly
+      matched to this small-model configuration. The broader lesson is that training
+      stability is not equivalent to small KL or low clipping rate. A good post-training
+      objective must keep the right gradients alive while preventing ratio drift from
+      turning into destructive updates.
+    </p>
+
+    <section class="refs">
+      <h2>References</h2>
+      <p>[1] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov. Proximal Policy Optimization Algorithms. arXiv:1707.06347, 2017.</p>
+      <p>[2] Z. Shao et al. DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models. arXiv:2402.03300, 2024.</p>
+      <p>[3] DAPO: An Open-Source LLM Reinforcement Learning System at Scale / Decoupled Clip and Dynamic Sampling Policy Optimization. arXiv:2503.14476, 2025.</p>
+      <p>[4] S. Yang et al. DCPO: Dynamic Clipping Policy Optimization. arXiv:2509.02333, 2025.</p>
+      <p>[5] C. Zheng et al. Group Sequence Policy Optimization. arXiv:2507.18071, 2025.</p>
+      <p>[6] C. Gao et al. Soft Adaptive Policy Optimization. arXiv:2511.20347, 2025.</p>
+      <p>[7] Z. Su et al. CE-GPPO: Coordinating Entropy via Gradient-Preserving Clipping Policy Optimization in Reinforcement Learning. arXiv:2509.20712, 2025.</p>
+    </section>
+  </main>
+</body>
+</html>

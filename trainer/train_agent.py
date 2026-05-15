@@ -426,7 +426,7 @@ if __name__ == "__main__":
     if args.use_wandb and is_main_process():
         import wandb
         wandb_id = ckp_data.get('wandb_id') if ckp_data else None
-        resume = 'must' if wandb_id else None
+        resume = 'allow' if wandb_id else None
         wandb.init(project=args.wandb_project, name=f"Agent-RL-E{args.epochs}-B{args.batch_size}-LR{args.learning_rate}", id=wandb_id, resume=resume)
 
     model, tokenizer = init_model(lm_config, args.from_weight, device=args.device)

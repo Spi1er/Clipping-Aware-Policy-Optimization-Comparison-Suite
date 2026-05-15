@@ -60,6 +60,124 @@ def setup_seed(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+def init_wandb_safely(project: str, name: str, config: dict,
+                      wandb_id: str = None, mode: str = "online"):
+    """
+    Non-interactive W&B initialisation for headless / remote environments
+    (Runpod, SSH, Docker, CI).
+
+    Why this helper exists
+    ──────────────────────
+    Calling `wandb.init()` directly without prior auth causes the wandb SDK to
+    internally call `wandb.login()`, which tries to open an interactive prompt
+    (prompt_api_key / prompt_choices).  In non-TTY environments that call hangs
+    or raises KeyboardInterrupt.
+
+    What we do instead
+    ──────────────────
+    1. Check for auth *before* touching wandb:
+         • WANDB_API_KEY env var  (preferred for headless use)
+         • ~/.netrc entry for api.wandb.ai  (set by `wandb login` locally)
+    2. If mode=="online" and neither is found: print a clear error and return
+       None so training continues without W&B rather than crashing.
+    3. If auth is available: call wandb.login(key=...) explicitly with
+       anonymous='never' and relogin=False so the SDK never falls through to
+       the interactive path.
+    4. Wrap wandb.init() in a try/except so transient network errors or bad
+       run-ids degrade gracefully instead of killing the training job.
+
+    Parameters
+    ──────────
+    project   : W&B project name
+    name      : run display name
+    config    : dict of hyperparameters (vars(args) from argparse)
+    wandb_id  : run id to resume (from checkpoint); None = new run
+    mode      : "online" | "offline" | "disabled"
+                  online   – normal cloud sync (requires WANDB_API_KEY)
+                  offline  – write runs to ./wandb locally, sync later with
+                             `wandb sync`; no network needed
+                  disabled – import succeeds but nothing is logged; useful
+                             for dry-run / smoke testing
+
+    Returns
+    ───────
+    The `wandb` module with an active run, or None if init was skipped/failed.
+    """
+    import wandb as _wandb
+
+    # ── mode=disabled: skip everything, return None ───────────────────────────
+    if mode == "disabled":
+        Logger("[W&B] mode=disabled — logging skipped.")
+        return None
+
+    # ── mode=offline: no network needed, skip auth check ─────────────────────
+    if mode == "offline":
+        Logger("[W&B] mode=offline — metrics will be saved locally.  "
+               "Run `wandb sync ./wandb` after training to upload.")
+    else:
+        # ── mode=online: verify auth before calling any wandb code ───────────
+        api_key = os.environ.get("WANDB_API_KEY", "").strip()
+        netrc_ok = False
+        if not api_key:
+            try:
+                import netrc as _netrc
+                nrc = _netrc.netrc()
+                netrc_ok = "api.wandb.ai" in nrc.hosts
+            except Exception:
+                pass
+
+        if not api_key and not netrc_ok:
+            Logger(
+                "\n[W&B] WARNING: --use_wandb was passed but no W&B credentials found.\n"
+                "  W&B is disabled for this run.  Training will continue normally.\n"
+                "\n"
+                "  To enable W&B logging on this machine:\n"
+                "    export WANDB_API_KEY=<your_key>   # get it from wandb.ai/authorize\n"
+                "  Or run once interactively:\n"
+                "    wandb login\n"
+                "  Or use offline mode:\n"
+                "    add --wandb_mode offline   (no API key needed; sync later)\n"
+            )
+            return None
+
+        # Explicit non-interactive login — suppresses the interactive prompt
+        # that hangs headless shells.  relogin=False means: don't re-prompt if
+        # already logged in; anonymous='never' means: never fall back to anon.
+        login_ok = _wandb.login(
+            key=api_key if api_key else None,
+            anonymous="never",
+            relogin=False,
+        )
+        if not login_ok:
+            Logger("[W&B] WARNING: wandb.login() returned False.  "
+                   "W&B disabled.  Check your WANDB_API_KEY.")
+            return None
+
+    # ── Suppress chatty SDK output in headless logs ───────────────────────────
+    os.environ.setdefault("WANDB_SILENT", "true")
+    os.environ.setdefault("WANDB_CONSOLE", "off")
+
+    # ── Initialise run ────────────────────────────────────────────────────────
+    try:
+        _wandb.init(
+            project=project,
+            name=name,
+            config=config,
+            id=wandb_id,
+            resume="allow" if wandb_id else None,
+            mode=mode,
+            # start_method="thread" avoids fork-related hangs in some
+            # container environments (Runpod, Docker with limited /dev/shm).
+            settings=_wandb.Settings(start_method="thread"),
+        )
+        Logger(f"[W&B] Run initialised: {_wandb.run.url if _wandb.run else '(no run)'}")
+        return _wandb
+    except Exception as e:
+        Logger(f"[W&B] WARNING: wandb.init() failed: {e}\n"
+               "  Training will continue without W&B logging.")
+        return None
+
+
 def safe_save(obj, path):
     """Atomically save obj to path via a .tmp file.
 

@@ -18,7 +18,7 @@ Canonical W&B key schema (all algorithms log NaN for inapplicable metrics):
 
 import re
 import torch
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -152,6 +152,9 @@ def ratio_stats(ratio: torch.Tensor, completion_mask: torch.Tensor) -> Dict[str,
     Token-level importance ratio statistics — prefixed clip/.
     Used by GRPO, DAPO, DCPO, CFPO, SAPO, CE-GPPO.
     GSPO uses seq_ratio_stats() for its sequence-level ratio.
+
+    Includes p10/p50/p90 so the full shape of the ratio distribution is visible
+    in W&B without needing to download raw tensors.
     """
     r = ratio[completion_mask.bool()]
     return {
@@ -160,6 +163,7 @@ def ratio_stats(ratio: torch.Tensor, completion_mask: torch.Tensor) -> Dict[str,
         "clip/ratio_min":  r.min().item(),
         "clip/ratio_max":  r.max().item(),
         "clip/ratio_p10":  r.quantile(0.10).item(),
+        "clip/ratio_p50":  r.quantile(0.50).item(),
         "clip/ratio_p90":  r.quantile(0.90).item(),
     }
 
@@ -176,6 +180,7 @@ def seq_ratio_stats(seq_ratio: torch.Tensor) -> Dict[str, float]:
         "clip/seq_ratio_min":  seq_ratio.min().item(),
         "clip/seq_ratio_max":  seq_ratio.max().item(),
         "clip/seq_ratio_p10":  seq_ratio.quantile(0.10).item(),
+        "clip/seq_ratio_p50":  seq_ratio.quantile(0.50).item(),
         "clip/seq_ratio_p90":  seq_ratio.quantile(0.90).item(),
     }
 
@@ -193,6 +198,9 @@ def clipped_fractions(ratio: torch.Tensor,
 
     eps_low:  how far below 1 the lower bound is  (ratio < 1 − eps_low  → below)
     eps_high: how far above 1 the upper bound is  (ratio > 1 + eps_high → above)
+
+    Both canonical names ("upper/lower") and legacy names ("above/below") are
+    returned so older dashboards continue to work.
     """
     m   = completion_mask.bool()
     adv = advantages_flat.unsqueeze(1).expand_as(ratio)               # [B*G, L]
@@ -202,14 +210,54 @@ def clipped_fractions(ratio: torch.Tensor,
     any_c = above | below
 
     total = m.float().sum().item() + 1e-8
+    above_frac = (above & m).float().sum().item() / total
+    below_frac = (below & m).float().sum().item() / total
     return {
         # Overall clipping rate
-        "clip/clipped_fraction":     (any_c & m).float().sum().item() / total,
-        "clip/above_clip_fraction":  (above & m).float().sum().item() / total,
-        "clip/below_clip_fraction":  (below & m).float().sum().item() / total,
+        "clip/clipped_fraction":       (any_c & m).float().sum().item() / total,
+        # Canonical directional names
+        "clip/upper_clipped_fraction": above_frac,
+        "clip/lower_clipped_fraction": below_frac,
+        # Legacy names (kept for backwards-compat with old dashboards)
+        "clip/above_clip_fraction":    above_frac,
+        "clip/below_clip_fraction":    below_frac,
         # Split by advantage sign  (NA&LP / PA&LP in CE-GPPO language)
-        "clip/pos_adv_clipped_frac": ((above & (adv > 0)) & m).float().sum().item() / total,
-        "clip/neg_adv_clipped_frac": ((below & (adv <= 0)) & m).float().sum().item() / total,
+        "clip/pos_adv_clipped_frac":   ((above & (adv > 0)) & m).float().sum().item() / total,
+        "clip/neg_adv_clipped_frac":   ((below & (adv <= 0)) & m).float().sum().item() / total,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENTROPY STATISTICS  (for diagnostic / comparison of clipping methods)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def entropy_stats(entropy_per_token: torch.Tensor,
+                  completion_mask: torch.Tensor) -> Dict[str, float]:
+    """
+    Token-level policy entropy statistics over completion tokens.
+
+    entropy_per_token: [B*G, L] — H(π_θ(·|ctx_t)) for each completion token t.
+                       Should be computed from the full softmax distribution
+                       H = −Σ_v p(v) log p(v), NOT from sampled-token logprobs alone.
+    completion_mask:   [B*G, L] — 1 for valid tokens, 0 for padding/post-EOS.
+
+    Returns train/ and clip/ prefixed metrics so they can be overlaid with
+    ratio and clipping curves in W&B for correlation analysis.
+    """
+    e = entropy_per_token[completion_mask.bool()]
+    if e.numel() == 0:
+        nan = float('nan')
+        return {
+            "train/entropy_mean": nan,
+            "train/entropy_std":  nan,
+            "train/entropy_p10":  nan,
+            "train/entropy_p90":  nan,
+        }
+    return {
+        "train/entropy_mean": e.mean().item(),
+        "train/entropy_std":  e.std().item(),
+        "train/entropy_p10":  e.quantile(0.10).item(),
+        "train/entropy_p90":  e.quantile(0.90).item(),
     }
 
 
@@ -269,18 +317,22 @@ _ALL_KEYS = [
     "train/reward", "train/policy_loss", "train/kl_ref",
     "train/avg_response_len", "train/grad_norm", "train/learning_rate",
     "train/advantages_mean", "train/advantages_std",
+    # ── entropy diagnostics (policy confidence / exploration) ─────────────────
+    "train/entropy_mean", "train/entropy_std",
+    "train/entropy_p10", "train/entropy_p90",
     # ── universal token-level ratio stats ─────────────────────────────────────
     "clip/ratio_mean", "clip/ratio_std",
     "clip/ratio_min", "clip/ratio_max",
-    "clip/ratio_p10", "clip/ratio_p90",
+    "clip/ratio_p10", "clip/ratio_p50", "clip/ratio_p90",
     # ── hard-clip fractions (GRPO / DAPO / DCPO / CE-GPPO) ───────────────────
     "clip/clipped_fraction",
-    "clip/above_clip_fraction", "clip/below_clip_fraction",
+    "clip/upper_clipped_fraction", "clip/lower_clipped_fraction",
+    "clip/above_clip_fraction", "clip/below_clip_fraction",   # legacy aliases
     "clip/pos_adv_clipped_frac", "clip/neg_adv_clipped_frac",
     # ── GSPO: sequence-level ratio ────────────────────────────────────────────
     "clip/seq_ratio_mean", "clip/seq_ratio_std",
     "clip/seq_ratio_min", "clip/seq_ratio_max",
-    "clip/seq_ratio_p10", "clip/seq_ratio_p90",
+    "clip/seq_ratio_p10", "clip/seq_ratio_p50", "clip/seq_ratio_p90",
     "clip/seq_clipped_fraction",
     # ── DCPO: dynamic adaptive clip bounds ────────────────────────────────────
     "clip/lower_bound_mean", "clip/upper_bound_mean",
@@ -292,7 +344,7 @@ _ALL_KEYS = [
     # ── CE-GPPO: gradient-preserving regions ─────────────────────────────────
     "clip/nalp_fraction", "clip/palp_fraction", "clip/preserved_grad_frac",
     # ── stability / smoothed curves ───────────────────────────────────────────
-    "stability/reward_ma", "stability/kl_ma",
+    "stability/reward_ma", "stability/kl_ma", "stability/entropy_ma",
 ]
 
 

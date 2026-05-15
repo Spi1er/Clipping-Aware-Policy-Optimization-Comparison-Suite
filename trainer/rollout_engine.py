@@ -57,17 +57,53 @@ class RolloutEngine(ABC):
 
 # ===== PyTorch 原生推理引擎 =====
 class TorchRolloutEngine(RolloutEngine):
+    """
+    Rollout engine that keeps a FROZEN SNAPSHOT of the policy (π_old) separate
+    from the live trainable model.
+
+    Design:
+      • _old_policy  — deep-copied, eval(), requires_grad_(False).
+                       Used for BOTH generation and old-logp computation.
+                       Updated by calling update_policy() AFTER each outer
+                       optimisation step.
+      • The live trainable model is never touched here; the engine only reads
+        its state_dict during update_policy().
+
+    Why this matters:
+      Within one outer step the trainable model is frozen at π_N.  After K
+      gradient updates it becomes π_{N+K}.  The next rollout uses _old_policy
+      which was synced to π_N at the end of the previous outer step.  So the
+      new-logps (from π_{N+K}) and old-logps (from π_N) are genuinely different,
+      giving ratio = π_{N+K}/π_N ≠ 1 and allowing PPO clipping to activate.
+    """
+
     def __init__(self, policy_model: torch.nn.Module, tokenizer, device: str = "cuda", autocast_ctx=None):
-        self.policy_model = policy_model
-        self.tokenizer = tokenizer
-        self.device = device
+        self.tokenizer    = tokenizer
+        self.device       = device
         self.autocast_ctx = autocast_ctx
-    
+        # Create frozen snapshot; the live model is NOT stored here.
+        self._old_policy  = self._make_snapshot(policy_model)
+
+    @staticmethod
+    def _make_snapshot(model: torch.nn.Module) -> torch.nn.Module:
+        """
+        Deep-copy model into a standalone eval/no-grad snapshot.
+        Unwraps DDP and torch.compile wrappers so the copy is a plain nn.Module.
+        """
+        import copy
+        raw  = model.module if isinstance(model, DistributedDataParallel) else model
+        raw  = getattr(raw, '_orig_mod', raw)   # unwrap torch.compile
+        snap = copy.deepcopy(raw)
+        snap.eval()
+        snap.requires_grad_(False)
+        return snap
+
     def rollout(self, prompt_ids: Tensor, attention_mask: Tensor, num_generations: int, max_new_tokens: int, temperature: float = 0.8) -> RolloutResult:
-        model = self.policy_model.module if isinstance(self.policy_model, DistributedDataParallel) else self.policy_model
-        
+        # Always use the FROZEN snapshot — never the live trainable model.
+        old_model = self._old_policy
+
         with torch.no_grad():
-            output_ids = model.generate(
+            output_ids = old_model.generate(
                 input_ids=prompt_ids,
                 attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
@@ -86,23 +122,31 @@ class TorchRolloutEngine(RolloutEngine):
         # derived from this clone so it is clean as well.
         output_ids = output_ids.clone()
 
-        prompt_len = prompt_ids.size(1)
+        prompt_len     = prompt_ids.size(1)
         completion_ids = output_ids[:, prompt_len:]  # [B*num_gen, R]
-        
+
         from contextlib import nullcontext
         ctx = self.autocast_ctx if self.autocast_ctx else nullcontext()
-        # Compute old log-probs under no_grad: these are frozen reference values.
-        # Without no_grad the forward pass builds a full gradient graph that is
-        # immediately thrown away (.detach() in every training script), wasting
-        # memory and keeping model-activation tensors alive for the whole step.
+        # Compute old-logps from the FROZEN snapshot under no_grad.
+        # These are the reference log-probs π_old(a|s) used for the IS ratio.
         with torch.no_grad(), ctx:
-            per_token_logps = compute_per_token_logps(self.policy_model, output_ids, completion_ids.size(1))
-        
+            per_token_logps = compute_per_token_logps(old_model, output_ids, completion_ids.size(1))
+
         completions = self.tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
         return RolloutResult(output_ids, completion_ids, per_token_logps, completions)
-    
+
     def update_policy(self, model: torch.nn.Module):
-        self.policy_model = model
+        """
+        Sync the frozen old-policy snapshot with the current trainable model.
+
+        Call this AFTER each outer optimisation step (after all K inner gradient
+        updates).  Uses load_state_dict for an efficient in-place weight copy
+        rather than a second deepcopy.  eval() and requires_grad_(False) are
+        preserved across load_state_dict.
+        """
+        raw = model.module if isinstance(model, DistributedDataParallel) else model
+        raw = getattr(raw, '_orig_mod', raw)
+        self._old_policy.load_state_dict(raw.state_dict())
 
 
 # ===== SGLang HTTP API 推理引擎 =====
